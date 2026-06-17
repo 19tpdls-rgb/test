@@ -8,10 +8,15 @@ import { reservationInputSchema } from "@/lib/validators";
 
 const duplicatePickupMessage =
   "이미 사용 중인 픽업번호입니다. 다른 번호를 선택해 주세요.";
+const duplicatePickupConstraint =
+  "reservations_reservation_date_pickup_number_key";
 
 type SupabaseErrorLike = {
   code?: string;
   message?: string;
+  details?: string;
+  hint?: string;
+  constraint?: string;
 };
 
 type ProductSnapshot = {
@@ -86,32 +91,36 @@ export async function POST(request: Request) {
     return pickupResult;
   }
 
-  const { data: reservation, error } = await supabase
-    .from("reservations")
-    .insert({
-      source: "manual",
-      customer_name: parsed.customerName,
-      customer_phone: normalizePhone(parsed.customerPhone),
-      reservation_date: parsed.reservationDate,
-      reservation_time: parsed.reservationTime,
-      expected_return_at: parsed.expectedReturnAt || null,
-      product_id: parsed.productId,
-      product_name_snapshot: productResult.name,
-      payment_amount: parsed.paymentAmount,
-      deposit_amount: parsed.depositAmount,
-      deposit_included: parsed.depositIncluded,
-      pickup_number_id: pickupResult.pickupNumberId,
-      pickup_number: pickupResult.pickupNumber,
-      status: parsed.status,
-      review_event_participated: parsed.reviewEventParticipated,
-      memo: parsed.memo || null,
-      created_by: adminResponse.user.id,
-    })
-    .select()
-    .single();
+  const reservationInput = {
+    source: "manual",
+    customer_name: parsed.customerName,
+    customer_phone: normalizePhone(parsed.customerPhone),
+    reservation_date: parsed.reservationDate,
+    reservation_time: parsed.reservationTime,
+    expected_return_at: parsed.expectedReturnAt || null,
+    product_id: parsed.productId,
+    product_name_snapshot: productResult.name,
+    payment_amount: parsed.paymentAmount,
+    deposit_amount: parsed.depositAmount,
+    deposit_included: parsed.depositIncluded,
+    pickup_number_id: pickupResult.pickupNumberId,
+    pickup_number: pickupResult.pickupNumber,
+    status: parsed.status,
+    review_event_participated: parsed.reviewEventParticipated,
+    memo: parsed.memo || null,
+    created_by: adminResponse.user.id,
+  };
+
+  const { data: reservation, error } = await supabase.rpc(
+    "create_reservation_with_refund",
+    {
+      p_reservation: reservationInput,
+      p_refund_amount: parsed.depositAmount,
+    },
+  );
 
   if (error) {
-    console.error("Failed to create reservation", {
+    console.error("Failed to create reservation with refund", {
       reservationDate: parsed.reservationDate,
       pickupNumber: pickupResult.pickupNumber,
       error,
@@ -126,23 +135,6 @@ export async function POST(request: Request) {
 
     return NextResponse.json(
       { error: "예약을 등록하지 못했습니다." },
-      { status: 500 },
-    );
-  }
-
-  const { error: refundError } = await supabase.from("refund_accounts").insert({
-    reservation_id: reservation.id,
-    refund_amount: parsed.depositAmount,
-  });
-
-  if (refundError) {
-    console.error("Failed to create refund account for reservation", {
-      reservationId: reservation.id,
-      error: refundError,
-    });
-
-    return NextResponse.json(
-      { error: "환불 계좌 정보를 초기화하지 못했습니다." },
       { status: 500 },
     );
   }
@@ -192,9 +184,21 @@ async function loadProductSnapshot(
     .from("products")
     .select("id, name, code, deposit_amount")
     .eq("id", productId)
-    .single();
+    .maybeSingle();
 
-  if (error || !product) {
+  if (error) {
+    console.error("Failed to load reservation product", {
+      productId,
+      error,
+    });
+
+    return NextResponse.json(
+      { error: "상품 정보를 확인하지 못했습니다." },
+      { status: 500 },
+    );
+  }
+
+  if (!product) {
     return NextResponse.json(
       { error: "상품을 찾을 수 없습니다." },
       { status: 400 },
@@ -289,9 +293,15 @@ async function resolvePickupNumber(
 }
 
 function isDuplicatePickupError(error: SupabaseErrorLike) {
+  const errorText = [
+    error.constraint,
+    error.message,
+    error.details,
+    error.hint,
+  ].filter(Boolean);
+
   return (
     error.code === "23505" &&
-    (error.message?.includes("pickup_number") ||
-      error.message?.includes("reservation_date"))
+    errorText.some((value) => value?.includes(duplicatePickupConstraint))
   );
 }

@@ -9,6 +9,8 @@ import { reservationInputSchema } from "@/lib/validators";
 const paramsSchema = z.object({ id: z.string().uuid() });
 const duplicatePickupMessage =
   "이미 사용 중인 픽업번호입니다. 다른 번호를 선택해 주세요.";
+const duplicatePickupConstraint =
+  "reservations_reservation_date_pickup_number_key";
 
 type RouteContext = {
   params: Promise<{ id: string }> | { id: string };
@@ -17,11 +19,21 @@ type RouteContext = {
 type SupabaseErrorLike = {
   code?: string;
   message?: string;
+  details?: string;
+  hint?: string;
+  constraint?: string;
 };
 
 type PickupNumberRow = {
   id: string;
   number: number;
+};
+
+type ProductSnapshot = {
+  id: string;
+  name: string;
+  code?: string;
+  deposit_amount?: number;
 };
 
 type ParsedReservationInput = ReturnType<typeof reservationInputSchema.parse>;
@@ -47,9 +59,21 @@ export async function GET(_request: Request, context: RouteContext) {
     .from("reservations")
     .select("*, products(*), refund_accounts(*), sms_logs(*)")
     .eq("id", params.data.id)
-    .single();
+    .maybeSingle();
 
-  if (error || !reservation) {
+  if (error) {
+    console.error("Failed to load reservation", {
+      reservationId: params.data.id,
+      error,
+    });
+
+    return NextResponse.json(
+      { error: "예약 정보를 불러오지 못했습니다." },
+      { status: 500 },
+    );
+  }
+
+  if (!reservation) {
     return NextResponse.json(
       { error: "예약을 찾을 수 없습니다." },
       { status: 404 },
@@ -87,17 +111,10 @@ export async function PATCH(request: Request, context: RouteContext) {
   }
 
   const supabase = await createClient();
-  const { data: product, error: productError } = await supabase
-    .from("products")
-    .select("id, name, code, deposit_amount")
-    .eq("id", parsed.productId)
-    .single();
+  const productResult = await loadProductSnapshot(supabase, parsed.productId);
 
-  if (productError || !product) {
-    return NextResponse.json(
-      { error: "상품을 찾을 수 없습니다." },
-      { status: 400 },
-    );
+  if (productResult instanceof NextResponse) {
+    return productResult;
   }
 
   const availabilityResponse = await validatePatchPickupNumber(
@@ -119,7 +136,7 @@ export async function PATCH(request: Request, context: RouteContext) {
       reservation_time: parsed.reservationTime,
       expected_return_at: parsed.expectedReturnAt || null,
       product_id: parsed.productId,
-      product_name_snapshot: product.name,
+      product_name_snapshot: productResult.name,
       payment_amount: parsed.paymentAmount,
       deposit_amount: parsed.depositAmount,
       deposit_included: parsed.depositIncluded,
@@ -131,7 +148,7 @@ export async function PATCH(request: Request, context: RouteContext) {
     })
     .eq("id", params.data.id)
     .select()
-    .single();
+    .maybeSingle();
 
   if (error) {
     console.error("Failed to update reservation", {
@@ -149,6 +166,13 @@ export async function PATCH(request: Request, context: RouteContext) {
     return NextResponse.json(
       { error: "예약을 수정하지 못했습니다." },
       { status: 500 },
+    );
+  }
+
+  if (!reservation) {
+    return NextResponse.json(
+      { error: "예약을 찾을 수 없습니다." },
+      { status: 404 },
     );
   }
 
@@ -226,6 +250,38 @@ async function requireActiveAdmin(action: string) {
   }
 }
 
+async function loadProductSnapshot(
+  supabase: Awaited<ReturnType<typeof createClient>>,
+  productId: string,
+): Promise<ProductSnapshot | NextResponse> {
+  const { data: product, error } = await supabase
+    .from("products")
+    .select("id, name, code, deposit_amount")
+    .eq("id", productId)
+    .maybeSingle();
+
+  if (error) {
+    console.error("Failed to load reservation product", {
+      productId,
+      error,
+    });
+
+    return NextResponse.json(
+      { error: "상품 정보를 확인하지 못했습니다." },
+      { status: 500 },
+    );
+  }
+
+  if (!product) {
+    return NextResponse.json(
+      { error: "상품을 찾을 수 없습니다." },
+      { status: 400 },
+    );
+  }
+
+  return product;
+}
+
 async function validatePatchPickupNumber(
   supabase: Awaited<ReturnType<typeof createClient>>,
   reservationId: string,
@@ -293,9 +349,15 @@ async function validatePatchPickupNumber(
 }
 
 function isDuplicatePickupError(error: SupabaseErrorLike) {
+  const errorText = [
+    error.constraint,
+    error.message,
+    error.details,
+    error.hint,
+  ].filter(Boolean);
+
   return (
     error.code === "23505" &&
-    (error.message?.includes("pickup_number") ||
-      error.message?.includes("reservation_date"))
+    errorText.some((value) => value?.includes(duplicatePickupConstraint))
   );
 }

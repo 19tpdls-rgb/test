@@ -79,7 +79,7 @@ describe("POST /api/reservations", () => {
     mockActiveAdmin();
   });
 
-  it("creates a manual reservation with automatic pickup allocation and refund account", async () => {
+  it("creates a manual reservation through the atomic reservation/refund RPC", async () => {
     const supabase = createReservationsSupabaseMock({
       product,
       pickupNumbers: [
@@ -87,7 +87,7 @@ describe("POST /api/reservations", () => {
         { id: pickupTwoId, number: 2, sort_order: 2 },
       ],
       usedReservations: [{ pickup_number: 1 }],
-      insertedReservation,
+      rpcReservation: insertedReservation,
     });
     mocks.createClient.mockResolvedValueOnce(supabase);
 
@@ -101,36 +101,70 @@ describe("POST /api/reservations", () => {
     );
 
     await expectJsonResponse(response, 200, { reservation: insertedReservation });
-    const reservationsInsertQuery = supabase.tableQueries.reservations[1];
-    expect(reservationsInsertQuery.insert).toHaveBeenCalledWith(
-      expect.objectContaining({
-        source: "manual",
-        customer_name: "홍길동",
-        customer_phone: "01012345678",
-        product_id: product.id,
-        product_name_snapshot: product.name,
-        pickup_number_id: pickupTwoId,
-        pickup_number: 2,
-        created_by: adminUser.id,
-      }),
+    expect(supabase.rpc).toHaveBeenCalledWith(
+      "create_reservation_with_refund",
+      {
+        p_refund_amount: validReservationInput.depositAmount,
+        p_reservation: expect.objectContaining({
+          source: "manual",
+          customer_name: "홍길동",
+          customer_phone: "01012345678",
+          product_id: product.id,
+          product_name_snapshot: product.name,
+          pickup_number_id: pickupTwoId,
+          pickup_number: 2,
+          created_by: adminUser.id,
+        }),
+      },
     );
-    const refundQuery = supabase.tableQueries.refund_accounts[0];
-    expect(refundQuery.insert).toHaveBeenCalledWith({
-      reservation_id: insertedReservation.id,
-      refund_amount: validReservationInput.depositAmount,
-    });
+    expect(supabase.tableQueries.reservations).toHaveLength(1);
+    expect(supabase.tableQueries.refund_accounts).toHaveLength(0);
   });
 
-  it("maps duplicate pickup number insert conflicts to a clear 409 response", async () => {
+  it("returns a safe 500 when the atomic RPC fails", async () => {
+    const rpcError = { message: "refund account insert failed" };
     const supabase = createReservationsSupabaseMock({
       product,
       pickupNumbers: [{ id: pickupTwoId, number: 2, sort_order: 2 }],
       usedReservations: [],
-      insertReservationError: {
-        code: "23505",
-        message:
-          'duplicate key value violates unique constraint "reservations_reservation_date_pickup_number_key"',
-      },
+      rpcError,
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    const { POST } = await import("@/app/api/reservations/route");
+    const response = await POST(
+      createJsonRequest("https://picup.example/api/reservations", {
+        ...validReservationInput,
+        pickupNumberId: pickupTwoId,
+        pickupNumber: 2,
+      }),
+    );
+
+    await expectJsonResponse(response, 500, {
+      error: "예약을 등록하지 못했습니다.",
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to create reservation with refund",
+      expect.objectContaining({ error: rpcError }),
+    );
+
+    consoleError.mockRestore();
+  });
+
+  it("maps the exact duplicate pickup constraint from the RPC to 409", async () => {
+    const rpcError = {
+      code: "23505",
+      message:
+        'duplicate key value violates unique constraint "reservations_reservation_date_pickup_number_key"',
+    };
+    const supabase = createReservationsSupabaseMock({
+      product,
+      pickupNumbers: [{ id: pickupTwoId, number: 2, sort_order: 2 }],
+      usedReservations: [],
+      rpcError,
     });
     mocks.createClient.mockResolvedValueOnce(supabase);
     const consoleError = vi
@@ -147,13 +181,37 @@ describe("POST /api/reservations", () => {
     );
 
     await expectJsonResponse(response, 409, {
-      error: "이미 사용 중인 픽업번호입니다. 다른 번호를 선택해 주세요.",
+      error: duplicatePickupMessage,
+    });
+
+    consoleError.mockRestore();
+  });
+
+  it("returns 500 for product lookup backend errors", async () => {
+    const productError = { message: "products unavailable" };
+    const supabase = createReservationsSupabaseMock({
+      product: null,
+      productError,
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    const { POST } = await import("@/app/api/reservations/route");
+    const response = await POST(
+      createJsonRequest(
+        "https://picup.example/api/reservations",
+        validReservationInput,
+      ),
+    );
+
+    await expectJsonResponse(response, 500, {
+      error: "상품 정보를 확인하지 못했습니다.",
     });
     expect(consoleError).toHaveBeenCalledWith(
-      "Failed to create reservation",
-      expect.objectContaining({
-        error: expect.objectContaining({ code: "23505" }),
-      }),
+      "Failed to load reservation product",
+      expect.objectContaining({ error: productError }),
     );
 
     consoleError.mockRestore();
@@ -174,6 +232,49 @@ describe("GET /api/reservations/[id]", () => {
     });
 
     await expectJsonResponse(response, 400, { error: "예약 ID를 확인하세요." });
+  });
+
+  it("returns 404 when the reservation is not found", async () => {
+    const supabase = createReservationsSupabaseMock({
+      detailReservation: null,
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+
+    const { GET } = await import("@/app/api/reservations/[id]/route");
+    const response = await GET(new Request("https://picup.example"), {
+      params: Promise.resolve({ id: reservationId }),
+    });
+
+    await expectJsonResponse(response, 404, {
+      error: "예약을 찾을 수 없습니다.",
+    });
+  });
+
+  it("returns 500 for reservation detail backend errors", async () => {
+    const detailError = { message: "reservations unavailable" };
+    const supabase = createReservationsSupabaseMock({
+      detailReservation: null,
+      detailError,
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    const { GET } = await import("@/app/api/reservations/[id]/route");
+    const response = await GET(new Request("https://picup.example"), {
+      params: Promise.resolve({ id: reservationId }),
+    });
+
+    await expectJsonResponse(response, 500, {
+      error: "예약 정보를 불러오지 못했습니다.",
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to load reservation",
+      expect.objectContaining({ error: detailError }),
+    );
+
+    consoleError.mockRestore();
   });
 });
 
@@ -204,6 +305,93 @@ describe("PATCH /api/reservations/[id]", () => {
       error: "상품을 찾을 수 없습니다.",
     });
   });
+
+  it("returns 500 for product lookup backend errors", async () => {
+    const productError = { message: "products unavailable" };
+    const supabase = createReservationsSupabaseMock({
+      product: null,
+      productError,
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    const { PATCH } = await import("@/app/api/reservations/[id]/route");
+    const response = await PATCH(
+      createJsonRequest(
+        "https://picup.example/api/reservations/id",
+        validReservationInput,
+      ),
+      { params: Promise.resolve({ id: reservationId }) },
+    );
+
+    await expectJsonResponse(response, 500, {
+      error: "상품 정보를 확인하지 못했습니다.",
+    });
+    expect(consoleError).toHaveBeenCalledWith(
+      "Failed to load reservation product",
+      expect.objectContaining({ error: productError }),
+    );
+
+    consoleError.mockRestore();
+  });
+
+  it("returns 404 when updating a missing reservation", async () => {
+    const supabase = createReservationsSupabaseMock({
+      product,
+      pickupNumbers: [{ id: pickupTwoId, number: 2, sort_order: 2 }],
+      duplicateRows: [],
+      updateReservation: null,
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+
+    const { PATCH } = await import("@/app/api/reservations/[id]/route");
+    const response = await PATCH(
+      createJsonRequest(
+        "https://picup.example/api/reservations/id",
+        validReservationInput,
+      ),
+      { params: Promise.resolve({ id: reservationId }) },
+    );
+
+    await expectJsonResponse(response, 404, {
+      error: "예약을 찾을 수 없습니다.",
+    });
+  });
+
+  it("does not map unrelated unique constraints to duplicate pickup errors", async () => {
+    const updateError = {
+      code: "23505",
+      message:
+        'duplicate key value violates unique constraint "reservations_external_reservation_id_key"',
+    };
+    const supabase = createReservationsSupabaseMock({
+      product,
+      pickupNumbers: [{ id: pickupTwoId, number: 2, sort_order: 2 }],
+      duplicateRows: [],
+      updateError,
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => undefined);
+
+    const { PATCH } = await import("@/app/api/reservations/[id]/route");
+    const response = await PATCH(
+      createJsonRequest(
+        "https://picup.example/api/reservations/id",
+        validReservationInput,
+      ),
+      { params: Promise.resolve({ id: reservationId }) },
+    );
+
+    await expectJsonResponse(response, 500, {
+      error: "예약을 수정하지 못했습니다.",
+    });
+
+    consoleError.mockRestore();
+  });
 });
 
 describe("DELETE /api/reservations/[id]", () => {
@@ -229,6 +417,8 @@ describe("DELETE /api/reservations/[id]", () => {
   });
 });
 
+const duplicatePickupMessage =
+  "이미 사용 중인 픽업번호입니다. 다른 번호를 선택해 주세요.";
 const adminUser = {
   id: "99999999-9999-4999-8999-999999999999",
   email: "admin@example.com",
@@ -315,22 +505,41 @@ type QueryMock = {
   then: Promise<unknown>["then"];
 };
 
+type SupabaseError = {
+  code?: string;
+  message?: string;
+  details?: string;
+  hint?: string;
+};
+
 type ReservationsSupabaseMockOptions = {
   listReservations?: unknown[];
   product?: typeof product | null;
+  productError?: SupabaseError | null;
   pickupNumbers?: { id: string; number: number; sort_order: number }[];
   usedReservations?: { pickup_number: number }[];
-  insertedReservation?: unknown;
-  insertReservationError?: { code?: string; message: string };
+  duplicateRows?: { id: string }[];
+  detailReservation?: unknown;
+  detailError?: SupabaseError | null;
+  updateReservation?: unknown;
+  updateError?: SupabaseError | null;
+  rpcReservation?: unknown;
+  rpcError?: SupabaseError | null;
 };
 
 function createReservationsSupabaseMock({
   listReservations = [],
   product: productResult = product,
+  productError = null,
   pickupNumbers = [],
   usedReservations = [],
-  insertedReservation: reservationResult = insertedReservation,
-  insertReservationError = undefined,
+  duplicateRows = [],
+  detailReservation = insertedReservation,
+  detailError = null,
+  updateReservation = insertedReservation,
+  updateError = null,
+  rpcReservation = insertedReservation,
+  rpcError = null,
 }: ReservationsSupabaseMockOptions) {
   const tableQueries: Record<string, QueryMock[]> = {
     reservations: [],
@@ -341,15 +550,20 @@ function createReservationsSupabaseMock({
 
   return {
     tableQueries,
+    rpc: vi.fn(async () => ({ data: rpcReservation, error: rpcError })),
     from: vi.fn((table: string) => {
       const query = createQueryMock({
         table,
         listReservations,
         productResult,
+        productError,
         pickupNumbers,
         usedReservations,
-        reservationResult,
-        insertReservationError,
+        duplicateRows,
+        detailReservation,
+        detailError,
+        updateReservation,
+        updateError,
       });
       tableQueries[table] ??= [];
       tableQueries[table].push(query);
@@ -363,18 +577,26 @@ function createQueryMock({
   table,
   listReservations,
   productResult,
+  productError,
   pickupNumbers,
   usedReservations,
-  reservationResult,
-  insertReservationError,
+  duplicateRows,
+  detailReservation,
+  detailError,
+  updateReservation,
+  updateError,
 }: {
   table: string;
   listReservations: unknown[];
   productResult: typeof product | null;
+  productError: SupabaseError | null;
   pickupNumbers: { id: string; number: number; sort_order: number }[];
   usedReservations: { pickup_number: number }[];
-  reservationResult: unknown;
-  insertReservationError?: { code?: string; message: string };
+  duplicateRows: { id: string }[];
+  detailReservation: unknown;
+  detailError: SupabaseError | null;
+  updateReservation: unknown;
+  updateError: SupabaseError | null;
 }): QueryMock {
   const query = {
     result: { data: null, error: null },
@@ -387,7 +609,9 @@ function createQueryMock({
       ) {
         query.result = { data: usedReservations, error: null };
       } else if (table === "reservations" && columns === "id") {
-        query.result = { data: [], error: null };
+        query.result = { data: duplicateRows, error: null };
+      } else if (table === "reservations" && columns?.includes("sms_logs")) {
+        query.result = { data: detailReservation, error: detailError };
       } else if (table === "pickup_numbers") {
         query.result = { data: pickupNumbers, error: null };
       }
@@ -397,31 +621,23 @@ function createQueryMock({
     eq: vi.fn(() => query),
     neq: vi.fn(() => query),
     order: vi.fn(() => query),
-    maybeSingle: vi.fn(async () => query.result),
-    single: vi.fn(async () => {
+    maybeSingle: vi.fn(async () => {
       if (table === "products") {
-        return {
-          data: productResult,
-          error: productResult ? null : { message: "not found" },
-        };
+        return { data: productResult, error: productError };
       }
 
       return query.result;
     }),
-    insert: vi.fn((value?: unknown) => {
-      if (table === "reservations") {
-        query.result = {
-          data: reservationResult,
-          error: insertReservationError ?? null,
-        };
-      } else if (table === "refund_accounts") {
-        query.result = { data: value, error: null };
+    single: vi.fn(async () => {
+      if (table === "products") {
+        return { data: productResult, error: productError };
       }
 
-      return query;
+      return query.result;
     }),
+    insert: vi.fn(() => query),
     update: vi.fn(() => {
-      query.result = { data: reservationResult, error: null };
+      query.result = { data: updateReservation, error: updateError };
 
       return query;
     }),
@@ -443,10 +659,7 @@ function createQueryMock({
   };
 
   if (table === "products") {
-    query.result = {
-      data: productResult,
-      error: productResult ? null : { message: "not found" },
-    };
+    query.result = { data: productResult, error: productError };
   }
 
   return query;
