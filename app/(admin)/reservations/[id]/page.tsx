@@ -54,7 +54,7 @@ type SmsLog = {
   rendered_body: string;
   status: "success" | "failed";
   failure_reason: string | null;
-  created_at: string;
+  sent_at: string;
 };
 
 export default async function ReservationDetailPage({
@@ -91,7 +91,7 @@ export default async function ReservationDetailPage({
   const detail = reservation as ReservationDetail;
   const refundAccount = normalizeRefundAccount(detail.refund_accounts);
   const smsLogs = [...(detail.sms_logs ?? [])]
-    .sort((a, b) => b.created_at.localeCompare(a.created_at))
+    .sort((a, b) => b.sent_at.localeCompare(a.sent_at))
     .slice(0, 5);
 
   return (
@@ -205,7 +205,7 @@ export default async function ReservationDetailPage({
                           {SMS_TEMPLATE_TYPE_LABELS[log.template_type]}
                         </span>
                         <span className="text-xs text-muted-foreground">
-                          {formatDateTime(log.created_at)} ·{" "}
+                          {formatDateTime(log.sent_at)} ·{" "}
                           {log.status === "success" ? "성공" : "실패"}
                         </span>
                       </div>

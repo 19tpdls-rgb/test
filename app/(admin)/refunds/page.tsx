@@ -217,7 +217,9 @@ function isRefundPending(reservation: RefundRow) {
     reservation.status !== "completed";
 
   return (
-    (reservation.deposit_included && statusNeedsRefund) ||
+    (reservation.deposit_included &&
+      statusNeedsRefund &&
+      refundAccount?.is_refunded !== true) ||
     refundAccount?.is_refunded === false
   );
 }

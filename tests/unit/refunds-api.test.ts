@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
@@ -22,6 +23,7 @@ vi.mock("@/lib/supabase/server", () => ({
 
 describe("PATCH /api/refunds/[reservationId]", () => {
   beforeEach(() => {
+    vi.useRealTimers();
     vi.resetModules();
     vi.clearAllMocks();
     mockActiveAdmin();
@@ -71,7 +73,7 @@ describe("PATCH /api/refunds/[reservationId]", () => {
     expect(mocks.createClient).not.toHaveBeenCalled();
   });
 
-  it("normalizes blank account fields and upserts refund data", async () => {
+  it("normalizes blank account fields and delegates the atomic upsert", async () => {
     const refundAccount = {
       id: "refund-1",
       reservation_id: reservationId,
@@ -83,9 +85,7 @@ describe("PATCH /api/refunds/[reservationId]", () => {
       refunded_at: null,
       refund_memo: null,
     };
-    const supabase = createRefundsSupabaseMock({
-      upsertRefundAccount: refundAccount,
-    });
+    const supabase = createRefundsSupabaseMock({ refundAccount });
     mocks.createClient.mockResolvedValueOnce(supabase);
 
     const { PATCH } = await import("@/app/api/refunds/[reservationId]/route");
@@ -103,24 +103,19 @@ describe("PATCH /api/refunds/[reservationId]", () => {
     );
 
     await expectJsonResponse(response, 200, { refundAccount });
-    const upsertQuery = supabase.tableQueries.refund_accounts[0];
-    expect(upsertQuery.upsert).toHaveBeenCalledWith(
-      {
-        reservation_id: reservationId,
-        bank_name: null,
-        account_number: "110123456789",
-        account_holder: null,
-        refund_amount: 10000,
-        is_refunded: false,
-        refunded_at: null,
-        refund_memo: null,
-      },
-      { onConflict: "reservation_id" },
-    );
-    expect(supabase.tableQueries.reservations).toHaveLength(0);
+    expect(supabase.rpc).toHaveBeenCalledWith("upsert_refund_account", {
+      p_reservation_id: reservationId,
+      p_bank_name: null,
+      p_account_number: "110123456789",
+      p_account_holder: null,
+      p_refund_amount: 10000,
+      p_is_refunded: false,
+      p_refunded_at: null,
+      p_refund_memo: null,
+    });
   });
 
-  it("sets refunded_at and advances reservation status when refund is complete", async () => {
+  it("sets refunded_at through the transactional RPC when refund is complete", async () => {
     const now = new Date("2026-06-17T03:00:00.000Z");
     vi.setSystemTime(now);
     const refundAccount = {
@@ -129,10 +124,7 @@ describe("PATCH /api/refunds/[reservationId]", () => {
       is_refunded: true,
       refunded_at: now.toISOString(),
     };
-    const supabase = createRefundsSupabaseMock({
-      upsertRefundAccount: refundAccount,
-      updateReservation: { id: reservationId, status: "deposit_refunded" },
-    });
+    const supabase = createRefundsSupabaseMock({ refundAccount });
     mocks.createClient.mockResolvedValueOnce(supabase);
 
     const { PATCH } = await import("@/app/api/refunds/[reservationId]/route");
@@ -146,26 +138,48 @@ describe("PATCH /api/refunds/[reservationId]", () => {
     );
 
     await expectJsonResponse(response, 200, { refundAccount });
-    expect(supabase.tableQueries.refund_accounts[0].upsert).toHaveBeenCalledWith(
+    expect(supabase.rpc).toHaveBeenCalledWith(
+      "upsert_refund_account",
       expect.objectContaining({
-        is_refunded: true,
-        refunded_at: now.toISOString(),
+        p_is_refunded: true,
+        p_refunded_at: now.toISOString(),
       }),
-      { onConflict: "reservation_id" },
     );
-    expect(supabase.tableQueries.reservations[0].update).toHaveBeenCalledWith({
-      status: "deposit_refunded",
-    });
-    expect(supabase.tableQueries.reservations[0].eq).toHaveBeenCalledWith(
-      "id",
-      reservationId,
-    );
-    vi.useRealTimers();
   });
 
-  it("returns a safe Korean error when upsert fails", async () => {
-    const upsertError = { message: "duplicate key detail" };
-    const supabase = createRefundsSupabaseMock({ upsertError });
+  it("delegates refund reversal to the transactional RPC", async () => {
+    const refundAccount = {
+      id: "refund-1",
+      reservation_id: reservationId,
+      is_refunded: false,
+      refunded_at: null,
+    };
+    const supabase = createRefundsSupabaseMock({ refundAccount });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+
+    const { PATCH } = await import("@/app/api/refunds/[reservationId]/route");
+    const response = await PATCH(
+      createJsonRequest({
+        ...validRefundInput,
+        isRefunded: false,
+        refundedAt: "2026-06-17T10:00:00.000Z",
+      }),
+      { params: Promise.resolve({ reservationId }) },
+    );
+
+    await expectJsonResponse(response, 200, { refundAccount });
+    expect(supabase.rpc).toHaveBeenCalledWith(
+      "upsert_refund_account",
+      expect.objectContaining({
+        p_is_refunded: false,
+        p_refunded_at: null,
+      }),
+    );
+  });
+
+  it("returns a safe Korean error when the transactional RPC fails", async () => {
+    const rpcError = { message: "foreign key detail" };
+    const supabase = createRefundsSupabaseMock({ rpcError });
     mocks.createClient.mockResolvedValueOnce(supabase);
     const consoleError = vi
       .spyOn(console, "error")
@@ -181,9 +195,26 @@ describe("PATCH /api/refunds/[reservationId]", () => {
     });
     expect(consoleError).toHaveBeenCalledWith(
       "Failed to upsert refund account",
-      expect.objectContaining({ error: upsertError }),
+      expect.objectContaining({ error: rpcError }),
     );
     consoleError.mockRestore();
+  });
+});
+
+describe("upsert_refund_account migration", () => {
+  it("keeps refund and reservation status changes in one function", async () => {
+    const migration = await readFile(
+      `${process.cwd()}/supabase/migrations/0005_upsert_refund_account.sql`,
+      "utf8",
+    );
+
+    expect(migration).toContain(
+      "create or replace function public.upsert_refund_account",
+    );
+    expect(migration).toContain("on conflict (reservation_id) do update");
+    expect(migration).toContain("set status = 'deposit_refunded'");
+    expect(migration).toContain("set status = 'returned'");
+    expect(migration).toContain("security invoker");
   });
 });
 
@@ -231,59 +262,18 @@ async function expectJsonResponse(
   await expect(response.json()).resolves.toEqual(body);
 }
 
-type QueryMock = {
-  result: unknown;
-  select: ReturnType<typeof vi.fn>;
-  eq: ReturnType<typeof vi.fn>;
-  maybeSingle: ReturnType<typeof vi.fn>;
-  upsert: ReturnType<typeof vi.fn>;
-  update: ReturnType<typeof vi.fn>;
-};
-
 type SupabaseError = {
   message?: string;
 };
 
 function createRefundsSupabaseMock({
-  upsertRefundAccount = null,
-  upsertError = null,
-  updateReservation = null,
-  updateError = null,
+  refundAccount = null,
+  rpcError = null,
 }: {
-  upsertRefundAccount?: unknown;
-  upsertError?: SupabaseError | null;
-  updateReservation?: unknown;
-  updateError?: SupabaseError | null;
+  refundAccount?: unknown;
+  rpcError?: SupabaseError | null;
 }) {
-  const tableQueries: Record<string, QueryMock[]> = {
-    refund_accounts: [],
-    reservations: [],
-  };
-
   return {
-    tableQueries,
-    from: vi.fn((table: string) => {
-      const query: QueryMock = {
-        result: { data: null, error: null },
-        select: vi.fn(() => query),
-        eq: vi.fn(() => query),
-        maybeSingle: vi.fn(async () => query.result),
-        upsert: vi.fn(() => {
-          query.result = { data: upsertRefundAccount, error: upsertError };
-
-          return query;
-        }),
-        update: vi.fn(() => {
-          query.result = { data: updateReservation, error: updateError };
-
-          return query;
-        }),
-      };
-
-      tableQueries[table] ??= [];
-      tableQueries[table].push(query);
-
-      return query;
-    }),
+    rpc: vi.fn(async () => ({ data: refundAccount, error: rpcError })),
   };
 }

@@ -46,23 +46,19 @@ export async function PATCH(request: Request, context: RouteContext) {
   }
 
   const supabase = await createClient();
-  const { data: refundAccount, error } = await supabase
-    .from("refund_accounts")
-    .upsert(
-      {
-        reservation_id: params.data.reservationId,
-        bank_name: blankToNull(parsed.bankName),
-        account_number: blankToNull(parsed.accountNumber),
-        account_holder: blankToNull(parsed.accountHolder),
-        refund_amount: parsed.refundAmount,
-        is_refunded: parsed.isRefunded,
-        refunded_at: refundedAt,
-        refund_memo: blankToNull(parsed.refundMemo),
-      },
-      { onConflict: "reservation_id" },
-    )
-    .select()
-    .maybeSingle();
+  const { data: refundAccount, error } = await supabase.rpc(
+    "upsert_refund_account",
+    {
+      p_reservation_id: params.data.reservationId,
+      p_bank_name: blankToNull(parsed.bankName),
+      p_account_number: blankToNull(parsed.accountNumber),
+      p_account_holder: blankToNull(parsed.accountHolder),
+      p_refund_amount: parsed.refundAmount,
+      p_is_refunded: parsed.isRefunded,
+      p_refunded_at: refundedAt,
+      p_refund_memo: blankToNull(parsed.refundMemo),
+    },
+  );
 
   if (error) {
     console.error("Failed to upsert refund account", {
@@ -74,25 +70,6 @@ export async function PATCH(request: Request, context: RouteContext) {
       { error: "환불 계좌 정보를 저장하지 못했습니다." },
       { status: 500 },
     );
-  }
-
-  if (parsed.isRefunded) {
-    const { error: statusError } = await supabase
-      .from("reservations")
-      .update({ status: "deposit_refunded" })
-      .eq("id", params.data.reservationId);
-
-    if (statusError) {
-      console.error("Failed to mark reservation deposit refunded", {
-        reservationId: params.data.reservationId,
-        error: statusError,
-      });
-
-      return NextResponse.json(
-        { error: "예약 상태를 환불 완료로 변경하지 못했습니다." },
-        { status: 500 },
-      );
-    }
   }
 
   return NextResponse.json({ refundAccount });

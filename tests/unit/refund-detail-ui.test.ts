@@ -83,6 +83,7 @@ describe("reservation detail client controls", () => {
       }),
     );
     expect(await screen.findByText("문자를 발송했습니다.")).toBeTruthy();
+    expect(mocks.refresh).toHaveBeenCalled();
   });
 
   it("submits refund account changes and refreshes the page", async () => {
@@ -125,6 +126,32 @@ describe("reservation detail client controls", () => {
     expect(await screen.findByText("환불 정보를 저장했습니다.")).toBeTruthy();
     expect(mocks.refresh).toHaveBeenCalled();
   });
+
+  it("shows an existing refund time as a local datetime-local value", () => {
+    const expectedLocalValue = formatLocalDateTimeInput(
+      new Date("2026-06-17T18:30:00+09:00"),
+    );
+
+    render(
+      createElement(RefundAccountForm, {
+        reservationId,
+        defaultRefundAmount: 10000,
+        refundAccount: {
+          bank_name: "국민은행",
+          account_number: "110123456789",
+          account_holder: "홍길동",
+          refund_amount: 10000,
+          is_refunded: true,
+          refunded_at: "2026-06-17T18:30:00+09:00",
+          refund_memo: null,
+        },
+      }),
+    );
+
+    expect((screen.getByLabelText("환불 일시") as HTMLInputElement).value).toBe(
+      expectedLocalValue,
+    );
+  });
 });
 
 const reservationId = "33333333-3333-4333-8333-333333333333";
@@ -136,4 +163,17 @@ function jsonResponse(body: unknown, status = 200) {
       "Content-Type": "application/json",
     },
   });
+}
+
+function formatLocalDateTimeInput(date: Date) {
+  return [
+    date.getFullYear(),
+    String(date.getMonth() + 1).padStart(2, "0"),
+    String(date.getDate()).padStart(2, "0"),
+  ].join("-")
+    + "T"
+    + [
+      String(date.getHours()).padStart(2, "0"),
+      String(date.getMinutes()).padStart(2, "0"),
+    ].join(":");
 }

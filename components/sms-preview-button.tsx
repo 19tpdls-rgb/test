@@ -1,6 +1,7 @@
 "use client";
 
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { Loader2Icon, SendIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -27,6 +28,7 @@ export function SmsPreviewButton({
   label,
   disabled = false,
 }: SmsPreviewButtonProps) {
+  const router = useRouter();
   const [isOpen, setIsOpen] = useState(false);
   const [renderedBody, setRenderedBody] = useState("");
   const [message, setMessage] = useState<string | null>(null);
@@ -97,6 +99,7 @@ export function SmsPreviewButton({
 
       setMessage("문자를 발송했습니다.");
       setIsOpen(false);
+      router.refresh();
     } catch (error) {
       setErrorMessage(
         error instanceof Error ? error.message : "문자를 발송하지 못했습니다.",

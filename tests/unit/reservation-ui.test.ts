@@ -312,7 +312,7 @@ function createDetailSupabaseMock() {
             rendered_body: "예약 안내입니다.",
             status: "success",
             failure_reason: null,
-            created_at: "2026-06-17T00:00:00.000Z",
+            sent_at: "2026-06-17T00:00:00.000Z",
           },
         ],
       },

@@ -67,9 +67,7 @@ export function RefundAccountForm({
       accountHolder: formState.accountHolder.trim(),
       refundAmount: Number(formState.refundAmount || 0),
       isRefunded: formState.isRefunded,
-      refundedAt: formState.refundedAt
-        ? new Date(formState.refundedAt).toISOString()
-        : null,
+      refundedAt: parseDateTimeLocalToIso(formState.refundedAt),
       refundMemo: formState.refundMemo.trim(),
     };
 
@@ -237,5 +235,44 @@ function toDateTimeLocalValue(value: string | null) {
     return "";
   }
 
-  return date.toISOString().slice(0, 16);
+  return [
+    date.getFullYear(),
+    padDatePart(date.getMonth() + 1),
+    padDatePart(date.getDate()),
+  ].join("-")
+    + "T"
+    + [date.getHours(), date.getMinutes()].map(padDatePart).join(":");
+}
+
+function parseDateTimeLocalToIso(value: string) {
+  if (!value) {
+    return null;
+  }
+
+  const match = value.match(
+    /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2})$/,
+  );
+
+  if (!match) {
+    return value;
+  }
+
+  const [, year, month, day, hour, minute] = match;
+  const date = new Date(
+    Number(year),
+    Number(month) - 1,
+    Number(day),
+    Number(hour),
+    Number(minute),
+  );
+
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toISOString();
+}
+
+function padDatePart(value: number) {
+  return String(value).padStart(2, "0");
 }
