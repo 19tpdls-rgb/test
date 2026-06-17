@@ -12,12 +12,16 @@ export async function requireAdmin() {
     redirect("/login");
   }
 
-  const { data: admin } = await supabase
+  const { data: admin, error } = await supabase
     .from("admins")
     .select("user_id, name, role, is_active")
     .eq("user_id", user.id)
     .eq("is_active", true)
-    .single();
+    .maybeSingle();
+
+  if (error) {
+    throw error;
+  }
 
   if (!admin) {
     redirect("/login?error=not_admin");

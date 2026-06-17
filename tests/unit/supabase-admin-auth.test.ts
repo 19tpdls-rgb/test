@@ -130,11 +130,11 @@ describe("requireAdmin", () => {
     await expect(requireAdmin()).rejects.toThrow("redirect:/login");
   });
 
-  it("redirects authenticated non-admin users to login with an error", async () => {
+  it("redirects authenticated users without an active admin row to login with an error", async () => {
     const query = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
-      single: vi.fn(async () => ({ data: null, error: null })),
+      maybeSingle: vi.fn(async () => ({ data: null, error: null })),
     };
     mocks.adminServerCreateClient.mockResolvedValue({
       auth: {
@@ -153,6 +153,30 @@ describe("requireAdmin", () => {
     );
     expect(query.eq).toHaveBeenCalledWith("user_id", "user-1");
     expect(query.eq).toHaveBeenCalledWith("is_active", true);
+    expect(query.maybeSingle).toHaveBeenCalled();
+  });
+
+  it("throws Supabase admin lookup errors instead of redirecting as not_admin", async () => {
+    const lookupError = new Error("PostgREST unavailable");
+    const query = {
+      select: vi.fn().mockReturnThis(),
+      eq: vi.fn().mockReturnThis(),
+      maybeSingle: vi.fn(async () => ({ data: null, error: lookupError })),
+    };
+    mocks.adminServerCreateClient.mockResolvedValue({
+      auth: {
+        getUser: vi.fn(async () => ({
+          data: { user: { id: "user-1", email: "admin@example.com" } },
+          error: null,
+        })),
+      },
+      from: vi.fn(() => query),
+    });
+
+    const { requireAdmin } = await import("@/lib/auth/admin");
+
+    await expect(requireAdmin()).rejects.toThrow(lookupError);
+    expect(mocks.redirect).not.toHaveBeenCalledWith("/login?error=not_admin");
   });
 
   it("returns the verified user and active admin row", async () => {
@@ -166,7 +190,7 @@ describe("requireAdmin", () => {
     const query = {
       select: vi.fn().mockReturnThis(),
       eq: vi.fn().mockReturnThis(),
-      single: vi.fn(async () => ({ data: admin, error: null })),
+      maybeSingle: vi.fn(async () => ({ data: admin, error: null })),
     };
     mocks.adminServerCreateClient.mockResolvedValue({
       auth: {
@@ -179,5 +203,6 @@ describe("requireAdmin", () => {
 
     await expect(requireAdmin()).resolves.toEqual({ user, admin });
     expect(query.select).toHaveBeenCalledWith("user_id, name, role, is_active");
+    expect(query.maybeSingle).toHaveBeenCalled();
   });
 });
