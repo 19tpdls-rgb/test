@@ -55,25 +55,40 @@ values
   (
     'reservation_guide',
     '예약 안내 문자',
-    '[PICUP PICNIC]\n{{customerName}}님 예약 안내드립니다.\n날짜: {{reservationDate}}\n시간: {{reservationTime}}\n상품: {{productName}}\n픽업번호: {{pickupNumber}}\n\n이용 후 반납 인증샷을 문자 또는 카톡으로 보내주세요.\n보증금 {{depositAmount}}원은 물품 확인 후 환불됩니다.',
+    $template$[PICUP PICNIC]
+{{customerName}}님 예약 안내드립니다.
+날짜: {{reservationDate}}
+시간: {{reservationTime}}
+상품: {{productName}}
+픽업번호: {{pickupNumber}}
+
+이용 후 반납 인증샷을 문자 또는 카톡으로 보내주세요.
+보증금 {{depositAmount}}원은 물품 확인 후 환불됩니다.$template$,
     array['customerName','reservationDate','reservationTime','productName','pickupNumber','depositAmount']
   ),
   (
     'return_request',
     '반납 요청 문자',
-    '[PICUP PICNIC]\n{{customerName}}님 이용 종료 시간이 가까워졌습니다.\n반납 후 인증샷을 문자 또는 카톡으로 보내주세요.\n픽업번호: {{pickupNumber}}',
+    $template$[PICUP PICNIC]
+{{customerName}}님 이용 종료 시간이 가까워졌습니다.
+반납 후 인증샷을 문자 또는 카톡으로 보내주세요.
+픽업번호: {{pickupNumber}}$template$,
     array['customerName','pickupNumber']
   ),
   (
     'review_request',
     '리뷰 요청 문자',
-    '[PICUP PICNIC]\n{{customerName}}님 리뷰 이벤트 참여 확인을 위해 리뷰 인증샷을 보내주세요.\n감사합니다.',
+    $template$[PICUP PICNIC]
+{{customerName}}님 리뷰 이벤트 참여 확인을 위해 리뷰 인증샷을 보내주세요.
+감사합니다.$template$,
     array['customerName']
   ),
   (
     'deposit_refunded',
     '보증금 환불 완료 문자',
-    '[PICUP PICNIC]\n{{customerName}}님 보증금 {{depositAmount}}원 환불이 완료되었습니다.\n이용해주셔서 감사합니다.',
+    $template$[PICUP PICNIC]
+{{customerName}}님 보증금 {{depositAmount}}원 환불이 완료되었습니다.
+이용해주셔서 감사합니다.$template$,
     array['customerName','depositAmount']
   )
 on conflict (type) do update set
