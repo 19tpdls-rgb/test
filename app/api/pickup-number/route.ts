@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { z } from "zod";
 
+import { ApiAdminLookupError, requireApiAdmin } from "@/lib/auth/api-admin";
 import { getNextPickupNumberFromLists } from "@/lib/reservations/pickup-number";
 import { createClient } from "@/lib/supabase/server";
 
@@ -20,6 +21,38 @@ const pickupNumberRequestSchema = z.object({
 });
 
 export async function POST(request: Request) {
+  try {
+    const adminGuard = await requireApiAdmin();
+
+    if (!adminGuard.ok) {
+      return NextResponse.json(
+        {
+          error:
+            adminGuard.code === "unauthenticated"
+              ? "로그인이 필요합니다."
+              : "관리자 권한이 필요합니다.",
+        },
+        { status: adminGuard.status },
+      );
+    }
+  } catch (error) {
+    if (error instanceof ApiAdminLookupError) {
+      console.error("Failed to verify pickup number API admin access", {
+        userId: error.userId,
+        error: error.cause,
+      });
+    } else {
+      console.error("Unexpected pickup number API admin guard failure", {
+        error,
+      });
+    }
+
+    return NextResponse.json(
+      { error: "관리자 권한 확인 중 오류가 발생했습니다." },
+      { status: 500 },
+    );
+  }
+
   let body: unknown;
 
   try {
@@ -55,6 +88,12 @@ export async function POST(request: Request) {
     .order("number", { ascending: true });
 
   if (pickupNumbersError) {
+    console.error("Failed to load active pickup numbers", {
+      productId,
+      reservationDate,
+      error: pickupNumbersError,
+    });
+
     return NextResponse.json(
       { error: "픽업번호를 불러오지 못했습니다." },
       { status: 500 },
@@ -67,6 +106,12 @@ export async function POST(request: Request) {
     .eq("reservation_date", reservationDate);
 
   if (reservationsError) {
+    console.error("Failed to load used pickup numbers", {
+      productId,
+      reservationDate,
+      error: reservationsError,
+    });
+
     return NextResponse.json(
       { error: "예약 픽업번호를 확인하지 못했습니다." },
       { status: 500 },
@@ -85,5 +130,7 @@ export async function POST(request: Request) {
     );
   }
 
+  // This is a preview recommendation only. Reservation creation must revalidate
+  // pickup number availability when it writes the reservation.
   return NextResponse.json(allocation);
 }
