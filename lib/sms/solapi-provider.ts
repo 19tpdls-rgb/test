@@ -5,17 +5,33 @@ import type {
   SmsSendInput,
   SmsSendResult,
 } from "@/lib/sms/provider";
+import { normalizePhone } from "@/lib/format";
 
 export class SolapiSmsProvider implements SmsProvider {
   async send(input: SmsSendInput): Promise<SmsSendResult> {
     const apiKey = process.env.SOLAPI_API_KEY;
     const apiSecret = process.env.SOLAPI_API_SECRET;
-    const from = process.env.SOLAPI_SENDER;
+    const from = normalizePhone(process.env.SOLAPI_SENDER ?? "");
+    const to = normalizePhone(input.to);
 
-    if (!apiKey || !apiSecret || !from) {
+    if (!apiKey || !apiSecret || !process.env.SOLAPI_SENDER) {
       return {
         ok: false,
         failureReason: "Solapi 환경변수가 설정되지 않았습니다.",
+      };
+    }
+
+    if (!isValidSolapiPhone(to)) {
+      return {
+        ok: false,
+        failureReason: "문자 수신 번호를 확인해 주세요.",
+      };
+    }
+
+    if (!isValidSolapiPhone(from)) {
+      return {
+        ok: false,
+        failureReason: "문자 발신 번호를 확인해 주세요.",
       };
     }
 
@@ -35,7 +51,7 @@ export class SolapiSmsProvider implements SmsProvider {
         },
         body: JSON.stringify({
           message: {
-            to: input.to,
+            to,
             from,
             text: input.text,
           },
@@ -62,6 +78,10 @@ export class SolapiSmsProvider implements SmsProvider {
       };
     }
   }
+}
+
+function isValidSolapiPhone(value: string) {
+  return /^\d{8,15}$/.test(value);
 }
 
 function getSolapiErrorMessage(body: unknown) {
