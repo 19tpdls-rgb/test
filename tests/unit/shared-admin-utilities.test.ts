@@ -50,9 +50,11 @@ describe("shared admin formatting helpers", () => {
     expect(formatKrw(12345)).toBe("₩12,345");
   });
 
-  it("formats 11-digit and 10-digit Korean phone numbers", () => {
+  it("formats mobile, Seoul, and non-Seoul Korean phone numbers", () => {
     expect(formatPhone("01012345678")).toBe("010-1234-5678");
-    expect(formatPhone("0212345678")).toBe("021-234-5678");
+    expect(formatPhone("0212345678")).toBe("02-1234-5678");
+    expect(formatPhone("021234567")).toBe("02-123-4567");
+    expect(formatPhone("0311234567")).toBe("031-123-4567");
   });
 
   it("returns the original phone value when digit count is unsupported", () => {
@@ -85,6 +87,82 @@ describe("shared admin validators", () => {
       reviewEventParticipated: false,
       status: "reserved",
     });
+  });
+
+  it("parses explicit boolean API and form values", () => {
+    const baseReservationInput = {
+      customerName: "홍길동",
+      customerPhone: "010-1234-5678",
+      reservationDate: "2026-06-17",
+      reservationTime: "14:30",
+      productId: "11111111-1111-4111-8111-111111111111",
+      paymentAmount: "30000",
+      pickupNumber: "7",
+    };
+
+    expect(
+      reservationInputSchema.parse({
+        ...baseReservationInput,
+        depositIncluded: "false",
+        reviewEventParticipated: "0",
+      }),
+    ).toMatchObject({
+      depositIncluded: false,
+      reviewEventParticipated: false,
+    });
+
+    expect(
+      reservationInputSchema.parse({
+        ...baseReservationInput,
+        depositIncluded: "1",
+        reviewEventParticipated: "on",
+      }),
+    ).toMatchObject({
+      depositIncluded: true,
+      reviewEventParticipated: true,
+    });
+
+    expect(
+      refundInputSchema.parse({
+        isRefunded: "false",
+      }),
+    ).toMatchObject({
+      isRefunded: false,
+    });
+
+    expect(
+      refundInputSchema.parse({
+        isRefunded: true,
+      }),
+    ).toMatchObject({
+      isRefunded: true,
+    });
+  });
+
+  it("rejects impossible reservation dates and times", () => {
+    const baseReservationInput = {
+      customerName: "홍길동",
+      customerPhone: "010-1234-5678",
+      productId: "11111111-1111-4111-8111-111111111111",
+      paymentAmount: "30000",
+      pickupNumber: "7",
+    };
+
+    expect(() =>
+      reservationInputSchema.parse({
+        ...baseReservationInput,
+        reservationDate: "2026-99-99",
+        reservationTime: "14:30",
+      }),
+    ).toThrow();
+
+    expect(() =>
+      reservationInputSchema.parse({
+        ...baseReservationInput,
+        reservationDate: "2026-06-17",
+        reservationTime: "99:99",
+      }),
+    ).toThrow();
   });
 
   it("parses refund input with planned defaults", () => {
