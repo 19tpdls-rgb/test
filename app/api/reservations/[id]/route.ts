@@ -117,14 +117,14 @@ export async function PATCH(request: Request, context: RouteContext) {
     return productResult;
   }
 
-  const availabilityResponse = await validatePatchPickupNumber(
+  const pickupResult = await validatePatchPickupNumber(
     supabase,
     params.data.id,
     parsed,
   );
 
-  if (availabilityResponse instanceof NextResponse) {
-    return availabilityResponse;
+  if (pickupResult instanceof NextResponse) {
+    return pickupResult;
   }
 
   const { data: reservation, error } = await supabase
@@ -140,8 +140,8 @@ export async function PATCH(request: Request, context: RouteContext) {
       payment_amount: parsed.paymentAmount,
       deposit_amount: parsed.depositAmount,
       deposit_included: parsed.depositIncluded,
-      pickup_number_id: parsed.pickupNumberId,
-      pickup_number: parsed.pickupNumber,
+      pickup_number_id: pickupResult.pickupNumberId,
+      pickup_number: pickupResult.pickupNumber,
       status: parsed.status,
       review_event_participated: parsed.reviewEventParticipated,
       memo: parsed.memo || null,
@@ -287,37 +287,35 @@ async function validatePatchPickupNumber(
   reservationId: string,
   parsed: ParsedReservationInput,
 ) {
-  if (parsed.pickupNumberId) {
-    const { data: pickupNumbers, error: pickupNumbersError } = await supabase
-      .from("pickup_numbers")
-      .select("id, number")
-      .eq("product_id", parsed.productId)
-      .eq("is_active", true);
+  const { data: pickupNumbers, error: pickupNumbersError } = await supabase
+    .from("pickup_numbers")
+    .select("id, number")
+    .eq("product_id", parsed.productId)
+    .eq("is_active", true);
 
-    if (pickupNumbersError) {
-      console.error("Failed to load pickup numbers for reservation update", {
-        productId: parsed.productId,
-        error: pickupNumbersError,
-      });
+  if (pickupNumbersError) {
+    console.error("Failed to load pickup numbers for reservation update", {
+      productId: parsed.productId,
+      error: pickupNumbersError,
+    });
 
-      return NextResponse.json(
-        { error: "픽업번호를 불러오지 못했습니다." },
-        { status: 500 },
-      );
-    }
-
-    const requestedPickupNumber = (pickupNumbers ?? []).find(
-      (candidate: PickupNumberRow) =>
-        candidate.id === parsed.pickupNumberId &&
-        candidate.number === parsed.pickupNumber,
+    return NextResponse.json(
+      { error: "픽업번호를 불러오지 못했습니다." },
+      { status: 500 },
     );
+  }
 
-    if (!requestedPickupNumber) {
-      return NextResponse.json(
-        { error: "선택한 픽업번호를 사용할 수 없습니다." },
-        { status: 400 },
-      );
-    }
+  const requestedPickupNumber = (pickupNumbers ?? []).find(
+    (candidate: PickupNumberRow) =>
+      candidate.number === parsed.pickupNumber &&
+      (!parsed.pickupNumberId || candidate.id === parsed.pickupNumberId),
+  );
+
+  if (!requestedPickupNumber) {
+    return NextResponse.json(
+      { error: "선택한 픽업번호를 사용할 수 없습니다." },
+      { status: 400 },
+    );
   }
 
   const { data: duplicateRows, error: duplicateCheckError } = await supabase
@@ -345,7 +343,10 @@ async function validatePatchPickupNumber(
     return NextResponse.json({ error: duplicatePickupMessage }, { status: 409 });
   }
 
-  return null;
+  return {
+    pickupNumberId: requestedPickupNumber.id,
+    pickupNumber: requestedPickupNumber.number,
+  };
 }
 
 function isDuplicatePickupError(error: SupabaseErrorLike) {

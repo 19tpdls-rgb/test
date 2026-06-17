@@ -415,6 +415,66 @@ describe("PATCH /api/reservations/[id]", () => {
     expect(updateQuery.eq).toHaveBeenCalledWith("id", reservationId);
   });
 
+  it("resolves a typed pickup number to an active pickup number when updating", async () => {
+    const supabase = createReservationsSupabaseMock({
+      product,
+      pickupNumbers: [
+        { id: pickupOneId, number: 1, sort_order: 1 },
+        { id: pickupTwoId, number: 2, sort_order: 2 },
+      ],
+      duplicateRows: [],
+      updateReservation: {
+        ...insertedReservation,
+        pickup_number_id: pickupOneId,
+        pickup_number: 1,
+      },
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+
+    const { PATCH } = await import("@/app/api/reservations/[id]/route");
+    const response = await PATCH(
+      createJsonRequest("https://picup.example/api/reservations/id", {
+        ...validReservationInput,
+        pickupNumberId: null,
+        pickupNumber: 1,
+      }),
+      { params: Promise.resolve({ id: reservationId }) },
+    );
+
+    expect(response.status).toBe(200);
+    const updateQuery = supabase.tableQueries.reservations[1];
+    expect(updateQuery.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        pickup_number_id: pickupOneId,
+        pickup_number: 1,
+      }),
+    );
+  });
+
+  it("returns 400 when a typed pickup number is not active for the product when updating", async () => {
+    const supabase = createReservationsSupabaseMock({
+      product,
+      pickupNumbers: [{ id: pickupTwoId, number: 2, sort_order: 2 }],
+      duplicateRows: [],
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+
+    const { PATCH } = await import("@/app/api/reservations/[id]/route");
+    const response = await PATCH(
+      createJsonRequest("https://picup.example/api/reservations/id", {
+        ...validReservationInput,
+        pickupNumberId: null,
+        pickupNumber: 1,
+      }),
+      { params: Promise.resolve({ id: reservationId }) },
+    );
+
+    await expectJsonResponse(response, 400, {
+      error: "선택한 픽업번호를 사용할 수 없습니다.",
+    });
+    expect(supabase.tableQueries.reservations).toHaveLength(0);
+  });
+
   it("returns 400 when the selected product is missing", async () => {
     const supabase = createReservationsSupabaseMock({
       product: null,
