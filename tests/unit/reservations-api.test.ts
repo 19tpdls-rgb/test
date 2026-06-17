@@ -234,6 +234,31 @@ describe("GET /api/reservations/[id]", () => {
     await expectJsonResponse(response, 400, { error: "예약 ID를 확인하세요." });
   });
 
+  it("returns reservation detail with related product, refund, and SMS data", async () => {
+    const reservation = {
+      ...insertedReservation,
+      products: { id: productId, name: product.name, code: product.code },
+      refund_accounts: { id: "refund-1", is_refunded: false },
+      sms_logs: [{ id: "sms-1", template_type: "reservation_guide" }],
+    };
+    const supabase = createReservationsSupabaseMock({
+      detailReservation: reservation,
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+
+    const { GET } = await import("@/app/api/reservations/[id]/route");
+    const response = await GET(new Request("https://picup.example"), {
+      params: Promise.resolve({ id: reservationId }),
+    });
+
+    await expectJsonResponse(response, 200, { reservation });
+    const detailQuery = supabase.tableQueries.reservations[0];
+    expect(detailQuery.select).toHaveBeenCalledWith(
+      "*, products(*), refund_accounts(*), sms_logs(*)",
+    );
+    expect(detailQuery.eq).toHaveBeenCalledWith("id", reservationId);
+  });
+
   it("returns 404 when the reservation is not found", async () => {
     const supabase = createReservationsSupabaseMock({
       detailReservation: null,
@@ -283,6 +308,62 @@ describe("PATCH /api/reservations/[id]", () => {
     vi.resetModules();
     vi.clearAllMocks();
     mockActiveAdmin();
+  });
+
+  it("updates a reservation after validating product and pickup availability", async () => {
+    const updatedReservation = {
+      ...insertedReservation,
+      customer_name: "홍길동",
+      customer_phone: "01012345678",
+      reservation_date: "2026-06-17",
+      reservation_time: "14:30",
+      product_name_snapshot: product.name,
+      payment_amount: 30000,
+      deposit_amount: 10000,
+      status: "reserved",
+      memo: "테스트 예약",
+    };
+    const supabase = createReservationsSupabaseMock({
+      product,
+      pickupNumbers: [{ id: pickupTwoId, number: 2, sort_order: 2 }],
+      duplicateRows: [],
+      updateReservation: updatedReservation,
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+
+    const { PATCH } = await import("@/app/api/reservations/[id]/route");
+    const response = await PATCH(
+      createJsonRequest(
+        "https://picup.example/api/reservations/id",
+        validReservationInput,
+      ),
+      { params: Promise.resolve({ id: reservationId }) },
+    );
+
+    await expectJsonResponse(response, 200, {
+      reservation: updatedReservation,
+    });
+    const updateQuery = supabase.tableQueries.reservations[1];
+    expect(updateQuery.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        customer_name: "홍길동",
+        customer_phone: "01012345678",
+        reservation_date: "2026-06-17",
+        reservation_time: "14:30",
+        expected_return_at: null,
+        product_id: product.id,
+        product_name_snapshot: product.name,
+        payment_amount: 30000,
+        deposit_amount: 10000,
+        deposit_included: true,
+        pickup_number_id: pickupTwoId,
+        pickup_number: 2,
+        status: "reserved",
+        review_event_participated: false,
+        memo: "테스트 예약",
+      }),
+    );
+    expect(updateQuery.eq).toHaveBeenCalledWith("id", reservationId);
   });
 
   it("returns 400 when the selected product is missing", async () => {
