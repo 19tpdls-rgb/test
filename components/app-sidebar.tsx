@@ -51,7 +51,7 @@ export function AppSidebar({ adminName }: AppSidebarProps) {
             PICUP PICNIC
           </Link>
           <p className="text-sm text-muted-foreground">
-            {adminName ?? "Admin"}
+            {adminName ?? "관리자"}
           </p>
         </div>
         <Separator />
