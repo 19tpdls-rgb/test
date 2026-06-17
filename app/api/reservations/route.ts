@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 
 import { ApiAdminLookupError, requireApiAdmin } from "@/lib/auth/api-admin";
 import { normalizePhone } from "@/lib/format";
-import { getNextPickupNumberFromLists } from "@/lib/reservations/pickup-number";
 import { createClient } from "@/lib/supabase/server";
 import { reservationInputSchema } from "@/lib/validators";
 
@@ -280,16 +279,28 @@ async function resolvePickupNumber(
     };
   }
 
-  const allocation = getNextPickupNumberFromLists(candidates ?? [], usedNumbers);
+  const requestedCandidate = (candidates ?? []).find(
+    (candidate: PickupNumberRow) => candidate.number === parsed.pickupNumber,
+  );
 
-  if (!allocation) {
+  if (!requestedCandidate) {
     return NextResponse.json(
-      { error: "선택한 날짜에 사용 가능한 픽업번호가 없습니다." },
+      { error: "선택한 픽업번호를 사용할 수 없습니다." },
+      { status: 400 },
+    );
+  }
+
+  if (usedNumbers.includes(parsed.pickupNumber)) {
+    return NextResponse.json(
+      { error: duplicatePickupMessage },
       { status: 409 },
     );
   }
 
-  return allocation;
+  return {
+    pickupNumberId: requestedCandidate.id,
+    pickupNumber: requestedCandidate.number,
+  };
 }
 
 function isDuplicatePickupError(error: SupabaseErrorLike) {

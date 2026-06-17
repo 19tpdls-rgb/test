@@ -1,13 +1,67 @@
+// @vitest-environment jsdom
+
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const mocks = vi.hoisted(() => ({
+  push: vi.fn(),
+  refresh: vi.fn(),
+}));
 
 vi.mock("next/navigation", () => ({
   useRouter: () => ({
-    push: vi.fn(),
-    refresh: vi.fn(),
+    push: mocks.push,
+    refresh: mocks.refresh,
   }),
 }));
+
+vi.mock("@/components/ui/select", async () => {
+  const React = await import("react");
+
+  return {
+    Select: ({
+      items = [],
+      onValueChange,
+      value,
+    }: {
+      items?: { label: string; value: string | null }[];
+      onValueChange?: (value: string | null) => void;
+      value?: string | null;
+    }) =>
+      React.createElement(
+        "select",
+        {
+          id: "productId",
+          onChange: (event: React.ChangeEvent<HTMLSelectElement>) =>
+            onValueChange?.(event.currentTarget.value || null),
+          value: value ?? "",
+        },
+        items.map((item) =>
+          React.createElement(
+            "option",
+            {
+              key: item.value ?? "empty",
+              value: item.value ?? "",
+            },
+            item.label,
+          ),
+        ),
+      ),
+    SelectContent: ({ children }: { children: React.ReactNode }) =>
+      React.createElement(React.Fragment, null, children),
+    SelectGroup: ({ children }: { children: React.ReactNode }) =>
+      React.createElement(React.Fragment, null, children),
+    SelectItem: ({ children }: { children: React.ReactNode }) =>
+      React.createElement(React.Fragment, null, children),
+    SelectTrigger: ({ children }: { children: React.ReactNode }) =>
+      React.createElement(React.Fragment, null, children),
+    SelectValue: ({ placeholder }: { placeholder?: string }) =>
+      React.createElement(React.Fragment, null, placeholder),
+  };
+});
 
 import { ReservationForm } from "@/components/reservation-form";
 import { ReservationTable } from "@/components/reservation-table";
@@ -39,6 +93,15 @@ const product = {
 };
 
 describe("reservation UI components", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.unstubAllGlobals();
+  });
+
   it("renders reservation status labels in Korean", () => {
     const html = renderToStaticMarkup(
       createElement(StatusBadge, { status: "reserved" }),
@@ -67,6 +130,20 @@ describe("reservation UI components", () => {
     expect(html).toContain("/reservations/11111111-1111-4111-8111-111111111111");
   });
 
+  it("renders the reservation detail placeholder page", async () => {
+    const { default: ReservationDetailPage } = await import(
+      "@/app/(admin)/reservations/[id]/page"
+    );
+    const html = renderToStaticMarkup(
+      await ReservationDetailPage({
+        params: Promise.resolve({ id: reservation.id }),
+      }),
+    );
+
+    expect(html).toContain("상세 화면 준비 중");
+    expect(html).toContain("/reservations");
+  });
+
   it("renders the create reservation form fields", () => {
     const html = renderToStaticMarkup(
       createElement(ReservationForm, { products: [product] }),
@@ -78,4 +155,121 @@ describe("reservation UI components", () => {
     expect(html).toContain("픽업번호");
     expect(html).toContain("예약 등록");
   });
+
+  it("auto-fills the pickup number returned by the pickup API", async () => {
+    const fetchMock = vi.fn(async () =>
+      jsonResponse({ pickupNumberId: "pickup-7", pickupNumber: 7 }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(createElement(ReservationForm, { products: [product] }));
+
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText("상품"), product.id);
+    await user.type(screen.getByLabelText("예약 날짜"), "2026-06-17");
+
+    await waitFor(() =>
+      expect(getInputValue("픽업번호")).toBe("7"),
+    );
+    expect(
+      screen.getByText("사용 가능한 픽업번호를 자동으로 넣었습니다."),
+    ).toBeTruthy();
+  });
+
+  it("clears the pickup ID when the pickup number is edited manually", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ pickupNumberId: "pickup-7", pickupNumber: 7 }),
+      )
+      .mockResolvedValueOnce(jsonResponse({ reservation: { id: "reservation-1" } }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(createElement(ReservationForm, { products: [product] }));
+
+    const user = userEvent.setup();
+    await fillRequiredFormFields(user);
+    await waitFor(() =>
+      expect(getInputValue("픽업번호")).toBe("7"),
+    );
+
+    await user.clear(screen.getByLabelText("픽업번호"));
+    await user.type(screen.getByLabelText("픽업번호"), "9");
+    await user.click(screen.getByRole("button", { name: "예약 등록" }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+    const [, postInit] = fetchMock.mock.calls[1];
+    expect(JSON.parse(String(postInit.body))).toEqual(
+      expect.objectContaining({
+        pickupNumber: 9,
+        pickupNumberId: null,
+      }),
+    );
+  });
+
+  it("shows a Korean message when pickup number lookup fails", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () =>
+        jsonResponse({ error: "픽업번호를 자동으로 가져오지 못했습니다." }, 500),
+      ),
+    );
+
+    render(createElement(ReservationForm, { products: [product] }));
+
+    const user = userEvent.setup();
+    await user.selectOptions(screen.getByLabelText("상품"), product.id);
+    await user.type(screen.getByLabelText("예약 날짜"), "2026-06-17");
+
+    expect(
+      await screen.findByText("픽업번호를 자동으로 가져오지 못했습니다."),
+    ).toBeTruthy();
+  });
+
+  it("shows a Korean error when reservation creation fails", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ pickupNumberId: "pickup-7", pickupNumber: 7 }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ error: "예약을 등록하지 못했습니다." }, 500),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(createElement(ReservationForm, { products: [product] }));
+
+    const user = userEvent.setup();
+    await fillRequiredFormFields(user);
+    await waitFor(() =>
+      expect(getInputValue("픽업번호")).toBe("7"),
+    );
+    await user.click(screen.getByRole("button", { name: "예약 등록" }));
+
+    expect((await screen.findByRole("alert")).textContent).toContain(
+      "예약을 등록하지 못했습니다.",
+    );
+  });
 });
+
+async function fillRequiredFormFields(
+  user: ReturnType<typeof userEvent.setup>,
+) {
+  await user.type(screen.getByLabelText("고객 이름"), "홍길동");
+  await user.type(screen.getByLabelText("고객 전화번호"), "010-1234-5678");
+  await user.type(screen.getByLabelText("예약 날짜"), "2026-06-17");
+  await user.type(screen.getByLabelText("예약 시간"), "14:30");
+  await user.selectOptions(screen.getByLabelText("상품"), product.id);
+}
+
+function jsonResponse(body: unknown, status = 200) {
+  return {
+    ok: status >= 200 && status < 300,
+    json: async () => body,
+    status,
+  };
+}
+
+function getInputValue(label: string) {
+  return (screen.getByLabelText(label) as HTMLInputElement).value;
+}

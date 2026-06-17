@@ -79,14 +79,14 @@ describe("POST /api/reservations", () => {
     mockActiveAdmin();
   });
 
-  it("creates a manual reservation through the atomic reservation/refund RPC", async () => {
+  it("creates a manual reservation with a typed pickup number when pickupNumberId is null", async () => {
     const supabase = createReservationsSupabaseMock({
       product,
       pickupNumbers: [
         { id: pickupOneId, number: 1, sort_order: 1 },
         { id: pickupTwoId, number: 2, sort_order: 2 },
       ],
-      usedReservations: [{ pickup_number: 1 }],
+      usedReservations: [],
       rpcReservation: insertedReservation,
     });
     mocks.createClient.mockResolvedValueOnce(supabase);
@@ -111,14 +111,63 @@ describe("POST /api/reservations", () => {
           customer_phone: "01012345678",
           product_id: product.id,
           product_name_snapshot: product.name,
-          pickup_number_id: pickupTwoId,
-          pickup_number: 2,
+          pickup_number_id: pickupOneId,
+          pickup_number: 1,
           created_by: adminUser.id,
         }),
       },
     );
     expect(supabase.tableQueries.reservations).toHaveLength(1);
     expect(supabase.tableQueries.refund_accounts).toHaveLength(0);
+  });
+
+  it("returns 409 when a typed pickup number is already used for the date", async () => {
+    const supabase = createReservationsSupabaseMock({
+      product,
+      pickupNumbers: [
+        { id: pickupOneId, number: 1, sort_order: 1 },
+        { id: pickupTwoId, number: 2, sort_order: 2 },
+      ],
+      usedReservations: [{ pickup_number: 1 }],
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+
+    const { POST } = await import("@/app/api/reservations/route");
+    const response = await POST(
+      createJsonRequest("https://picup.example/api/reservations", {
+        ...validReservationInput,
+        pickupNumberId: null,
+        pickupNumber: 1,
+      }),
+    );
+
+    await expectJsonResponse(response, 409, {
+      error: duplicatePickupMessage,
+    });
+    expect(supabase.rpc).not.toHaveBeenCalled();
+  });
+
+  it("returns 400 when a typed pickup number is not active for the product", async () => {
+    const supabase = createReservationsSupabaseMock({
+      product,
+      pickupNumbers: [{ id: pickupTwoId, number: 2, sort_order: 2 }],
+      usedReservations: [],
+    });
+    mocks.createClient.mockResolvedValueOnce(supabase);
+
+    const { POST } = await import("@/app/api/reservations/route");
+    const response = await POST(
+      createJsonRequest("https://picup.example/api/reservations", {
+        ...validReservationInput,
+        pickupNumberId: null,
+        pickupNumber: 1,
+      }),
+    );
+
+    await expectJsonResponse(response, 400, {
+      error: "선택한 픽업번호를 사용할 수 없습니다.",
+    });
+    expect(supabase.rpc).not.toHaveBeenCalled();
   });
 
   it("returns a safe 500 when the atomic RPC fails", async () => {
@@ -679,7 +728,7 @@ function createQueryMock({
   updateReservation: unknown;
   updateError: SupabaseError | null;
 }): QueryMock {
-  const query = {
+  const query: QueryMock = {
     result: { data: null, error: null },
     select: vi.fn((columns?: string) => {
       if (table === "reservations" && columns?.includes("products(name")) {

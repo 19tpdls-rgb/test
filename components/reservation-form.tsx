@@ -96,19 +96,23 @@ export function ReservationForm({ products }: ReservationFormProps) {
           signal: controller.signal,
         });
         const body = (await response.json().catch(() => ({}))) as {
-          id?: string;
-          number?: number;
+          pickupNumberId?: string;
+          pickupNumber?: number;
           error?: string;
         };
 
-        if (!response.ok || !body.id || typeof body.number !== "number") {
+        if (
+          !response.ok ||
+          !body.pickupNumberId ||
+          typeof body.pickupNumber !== "number"
+        ) {
           throw new Error(body.error ?? "픽업번호를 자동으로 가져오지 못했습니다.");
         }
 
         setFormState((current) => ({
           ...current,
-          pickupNumber: String(body.number),
-          pickupNumberId: body.id ?? null,
+          pickupNumber: String(body.pickupNumber),
+          pickupNumberId: body.pickupNumberId ?? null,
         }));
         setPickupMessage("사용 가능한 픽업번호를 자동으로 넣었습니다.");
       } catch (error) {
