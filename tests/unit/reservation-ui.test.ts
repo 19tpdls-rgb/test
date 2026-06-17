@@ -7,15 +7,23 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
+  createClient: vi.fn(),
   push: vi.fn(),
   refresh: vi.fn(),
 }));
 
 vi.mock("next/navigation", () => ({
+  notFound: vi.fn(() => {
+    throw new Error("NEXT_NOT_FOUND");
+  }),
   useRouter: () => ({
     push: mocks.push,
     refresh: mocks.refresh,
   }),
+}));
+
+vi.mock("@/lib/supabase/server", () => ({
+  createClient: mocks.createClient,
 }));
 
 vi.mock("@/components/ui/select", async () => {
@@ -130,7 +138,9 @@ describe("reservation UI components", () => {
     expect(html).toContain("/reservations/11111111-1111-4111-8111-111111111111");
   });
 
-  it("renders the reservation detail placeholder page", async () => {
+  it("renders reservation detail data and actions", async () => {
+    mocks.createClient.mockResolvedValueOnce(createDetailSupabaseMock());
+
     const { default: ReservationDetailPage } = await import(
       "@/app/(admin)/reservations/[id]/page"
     );
@@ -140,7 +150,11 @@ describe("reservation UI components", () => {
       }),
     );
 
-    expect(html).toContain("상세 화면 준비 중");
+    expect(html).toContain("홍길동 예약 상세");
+    expect(html).toContain("010-1234-5678");
+    expect(html).toContain("피크닉 세트");
+    expect(html).toContain("예약 안내 문자");
+    expect(html).toContain("환불 계좌");
     expect(html).toContain("/reservations");
   });
 
@@ -267,6 +281,47 @@ function jsonResponse(body: unknown, status = 200) {
     ok: status >= 200 && status < 300,
     json: async () => body,
     status,
+  };
+}
+
+function createDetailSupabaseMock() {
+  const query = {
+    select: vi.fn(() => query),
+    eq: vi.fn(() => query),
+    maybeSingle: vi.fn(async () => ({
+      data: {
+        ...reservation,
+        expected_return_at: "2026-06-17T09:30:00.000Z",
+        deposit_included: true,
+        review_event_participated: true,
+        memo: "우천 시 연락",
+        refund_accounts: {
+          bank_name: "국민은행",
+          account_number: "110123456789",
+          account_holder: "홍길동",
+          refund_amount: 10000,
+          is_refunded: false,
+          refunded_at: null,
+          refund_memo: null,
+        },
+        sms_logs: [
+          {
+            id: "sms-1",
+            template_type: "reservation_guide",
+            recipient_phone: "01012345678",
+            rendered_body: "예약 안내입니다.",
+            status: "success",
+            failure_reason: null,
+            created_at: "2026-06-17T00:00:00.000Z",
+          },
+        ],
+      },
+      error: null,
+    })),
+  };
+
+  return {
+    from: vi.fn(() => query),
   };
 }
 
