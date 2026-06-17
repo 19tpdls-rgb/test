@@ -24,41 +24,6 @@ describe("dashboard helpers", () => {
     expect(range.endIso).toBe("2026-06-17T15:00:00.000Z");
   });
 
-  it("aggregates refund pending rows using refunds page semantics", async () => {
-    const { countPendingRefunds } = await import(
-      "@/app/(admin)/dashboard/dashboard-data"
-    );
-
-    expect(
-      countPendingRefunds([
-        {
-          id: "deposit-included",
-          deposit_included: true,
-          status: "returned",
-          refund_accounts: null,
-        },
-        {
-          id: "explicit-not-refunded",
-          deposit_included: false,
-          status: "completed",
-          refund_accounts: { is_refunded: false },
-        },
-        {
-          id: "already-refunded",
-          deposit_included: true,
-          status: "returned",
-          refund_accounts: { is_refunded: true },
-        },
-        {
-          id: "completed-without-account",
-          deposit_included: true,
-          status: "completed",
-          refund_accounts: null,
-        },
-      ]),
-    ).toBe(2);
-  });
-
   it("summarizes SMS logs by today success and failure", async () => {
     const { summarizeSmsLogs } = await import(
       "@/app/(admin)/dashboard/dashboard-data"
@@ -71,13 +36,8 @@ describe("dashboard helpers", () => {
           { id: "2", status: "failed", sent_at: "2026-06-17T03:00:00.000Z" },
           { id: "3", status: "success", sent_at: "2026-06-15T12:00:00.000Z" },
         ],
-        {
-          today: "2026-06-17",
-          startIso: "2026-06-16T15:00:00.000Z",
-          endIso: "2026-06-17T15:00:00.000Z",
-        },
       ),
-    ).toEqual({ success: 1, failed: 1 });
+    ).toEqual({ success: 2, failed: 1 });
   });
 });
 
@@ -88,7 +48,8 @@ describe("dashboard page", () => {
   });
 
   it("queries dashboard data and renders Korean operations summary", async () => {
-    mocks.createClient.mockResolvedValueOnce(createDashboardSupabaseMock());
+    const supabase = createDashboardSupabaseMock();
+    mocks.createClient.mockResolvedValueOnce(supabase);
 
     const { default: DashboardPage } = await import(
       "@/app/(admin)/dashboard/page"
@@ -107,6 +68,30 @@ describe("dashboard page", () => {
     expect(html).toContain("최근 문자 로그");
     expect(html).toContain("홍길동");
     expect(html).toContain("문자 발송 실패");
+
+    expect(supabase.calls).toContainEqual({
+      table: "reservations",
+      method: "eq",
+      args: ["reservation_date", "2026-06-17"],
+    });
+    expect(supabase.calls).toContainEqual({
+      table: "sms_logs",
+      method: "gte",
+      args: ["sent_at", "2026-06-16T15:00:00.000Z"],
+    });
+    expect(supabase.calls).toContainEqual({
+      table: "sms_logs",
+      method: "lt",
+      args: ["sent_at", "2026-06-17T15:00:00.000Z"],
+    });
+    expect(supabase.calls).toContainEqual({
+      table: "reservations",
+      method: "or",
+      args: [
+        "and(status.eq.return_photo_pending,reservation_date.eq.2026-06-17),and(status.eq.in_use,expected_return_at.gte.2026-06-16T15:00:00.000Z,expected_return_at.lt.2026-06-17T15:00:00.000Z)",
+      ],
+    });
+    expect(supabase.rpc).toHaveBeenCalledWith("count_pending_refunds");
   });
 });
 
@@ -114,17 +99,7 @@ function createDashboardSupabaseMock() {
   const responses: Record<string, unknown> = {
     "reservations:count-today": { count: 3, error: null },
     "reservations:count-return": { count: 2, error: null },
-    "reservations:refunds": {
-      data: [
-        {
-          id: "refund-1",
-          deposit_included: true,
-          status: "returned",
-          refund_accounts: null,
-        },
-      ],
-      error: null,
-    },
+    "refunds:pending": { data: 1, error: null },
     "reservations:completed": { count: 8, error: null },
     "sms_logs:today": {
       data: [
@@ -165,7 +140,9 @@ function createDashboardSupabaseMock() {
     },
   };
 
-  return {
+  const supabase = {
+    calls: [] as Array<{ table: string; method: string; args: unknown[] }>,
+    rpc: vi.fn(() => Promise.resolve(responses["refunds:pending"])),
     from(table: string) {
       const state = { table, select: "" };
       const builder = {
@@ -173,19 +150,24 @@ function createDashboardSupabaseMock() {
           state.select = columns;
           return builder;
         },
-        eq() {
+        eq(...args: unknown[]) {
+          supabase.calls.push({ table, method: "eq", args });
           return builder;
         },
-        lte() {
+        lte(...args: unknown[]) {
+          supabase.calls.push({ table, method: "lte", args });
           return builder;
         },
-        gte() {
+        gte(...args: unknown[]) {
+          supabase.calls.push({ table, method: "gte", args });
           return builder;
         },
-        lt() {
+        lt(...args: unknown[]) {
+          supabase.calls.push({ table, method: "lt", args });
           return builder;
         },
-        or() {
+        or(...args: unknown[]) {
+          supabase.calls.push({ table, method: "or", args });
           return builder;
         },
         order() {
@@ -207,6 +189,8 @@ function createDashboardSupabaseMock() {
       return builder;
     },
   };
+
+  return supabase;
 }
 
 function resolveResponse(
@@ -218,9 +202,6 @@ function resolveResponse(
   }
   if (state.table === "reservations" && state.select === "id, expected_return_at") {
     return responses["reservations:count-return"];
-  }
-  if (state.table === "reservations" && state.select.includes("refund_accounts")) {
-    return responses["reservations:refunds"];
   }
   if (state.table === "reservations") {
     return responses["reservations:completed"];

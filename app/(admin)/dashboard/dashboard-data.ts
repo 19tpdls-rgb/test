@@ -6,17 +6,6 @@ export type SeoulDayRange = {
   endIso: string;
 };
 
-export type RefundDashboardRow = {
-  id: string;
-  deposit_included: boolean;
-  status: ReservationStatus;
-  refund_accounts?: RefundAccountSummary | RefundAccountSummary[] | null;
-};
-
-export type RefundAccountSummary = {
-  is_refunded: boolean | null;
-};
-
 export type RecentReservationRow = {
   id: string;
   customer_name: string;
@@ -66,6 +55,7 @@ type QueryResult<T> = {
 };
 
 export type SupabaseLike = {
+  rpc?(fn: string): PromiseLike<unknown>;
   from(table: string): {
     select(
       columns: string,
@@ -77,6 +67,7 @@ export type SupabaseLike = {
 type SupabaseQueryBuilder = PromiseLike<unknown> & {
   eq(column: string, value: string): SupabaseQueryBuilder;
   gte(column: string, value: string): SupabaseQueryBuilder;
+  lte(column: string, value: string): SupabaseQueryBuilder;
   lt(column: string, value: string): SupabaseQueryBuilder;
   or(filters: string): SupabaseQueryBuilder;
   order(column: string, options?: { ascending?: boolean }): SupabaseQueryBuilder;
@@ -93,15 +84,15 @@ export async function getDashboardData(
   const [
     todayReservations,
     returnWaiting,
-    refundRows,
+    refundPending,
     completedReservations,
     smsTodayLogs,
     recentReservations,
     recentSmsLogs,
   ] = await Promise.all([
     countTodayReservations(supabase, range.today),
-    countReturnWaiting(supabase, now),
-    listRefundRows(supabase),
+    countReturnWaiting(supabase, range),
+    countPendingRefunds(supabase),
     countCompletedReservations(supabase),
     listTodaySmsLogs(supabase, range),
     listRecentReservations(supabase),
@@ -111,7 +102,7 @@ export async function getDashboardData(
   for (const result of [
     todayReservations,
     returnWaiting,
-    refundRows,
+    refundPending,
     completedReservations,
     smsTodayLogs,
     recentReservations,
@@ -122,14 +113,14 @@ export async function getDashboardData(
     }
   }
 
-  const smsSummary = summarizeSmsLogs(smsTodayLogs.value, range);
+  const smsSummary = summarizeSmsLogs(smsTodayLogs.value);
 
   return {
     today: range.today,
     metrics: {
       todayReservations: todayReservations.value,
       returnWaiting: returnWaiting.value,
-      refundPending: countPendingRefunds(refundRows.value),
+      refundPending: refundPending.value,
       completedReservations: completedReservations.value,
       smsSuccessToday: smsSummary.success,
       smsFailedToday: smsSummary.failed,
@@ -157,19 +148,10 @@ export function getSeoulDayRange(now = new Date()): SeoulDayRange {
   };
 }
 
-export function countPendingRefunds(rows: RefundDashboardRow[]) {
-  return rows.filter(isRefundPending).length;
-}
-
-export function summarizeSmsLogs(
-  logs: SmsSummaryLogRow[],
-  range: SeoulDayRange,
-) {
+export function summarizeSmsLogs(logs: SmsSummaryLogRow[]) {
   return logs.reduce(
     (summary, log) => {
-      if (log.sent_at >= range.startIso && log.sent_at < range.endIso) {
-        summary[log.status] += 1;
-      }
+      summary[log.status] += 1;
 
       return summary;
     },
@@ -189,23 +171,32 @@ async function countTodayReservations(
   return countResult(result, "오늘 예약 수");
 }
 
-async function countReturnWaiting(supabase: SupabaseLike, now: Date) {
+async function countReturnWaiting(supabase: SupabaseLike, range: SeoulDayRange) {
   const result = await supabase
     .from("reservations")
     .select("id, expected_return_at", { count: "exact", head: true })
     .or(
-      `status.eq.return_photo_pending,and(status.eq.in_use,expected_return_at.lte.${now.toISOString()})`,
+      `and(status.eq.return_photo_pending,reservation_date.eq.${range.today}),and(status.eq.in_use,expected_return_at.gte.${range.startIso},expected_return_at.lt.${range.endIso})`,
     );
 
   return countResult(result, "오늘 반납 대기 수");
 }
 
-async function listRefundRows(supabase: SupabaseLike) {
-  const result = await supabase
-    .from("reservations")
-    .select("id, deposit_included, status, refund_accounts(is_refunded)");
+async function countPendingRefunds(supabase: SupabaseLike) {
+  if (!supabase.rpc) {
+    return { value: 0, errorLabel: "보증금 환불 대기 수" };
+  }
 
-  return listResult<RefundDashboardRow>(result, "보증금 환불 대기 수");
+  const result = await supabase.rpc("count_pending_refunds");
+  const { data, error } = result as {
+    data?: number | null;
+    error?: { message?: string } | null;
+  };
+
+  return {
+    value: error ? 0 : (data ?? 0),
+    errorLabel: error ? "보증금 환불 대기 수" : null,
+  };
 }
 
 async function countCompletedReservations(supabase: SupabaseLike) {
@@ -285,26 +276,4 @@ function listResult<T>(result: unknown, label: string) {
     value: error ? [] : ((data ?? []) as T[]),
     errorLabel: error ? label : null,
   };
-}
-
-function isRefundPending(reservation: RefundDashboardRow) {
-  const refundAccount = normalizeRefundAccount(reservation.refund_accounts);
-  const statusNeedsRefund =
-    reservation.status !== "deposit_refunded" &&
-    reservation.status !== "completed";
-
-  return (
-    (reservation.deposit_included &&
-      statusNeedsRefund &&
-      refundAccount?.is_refunded !== true) ||
-    refundAccount?.is_refunded === false
-  );
-}
-
-function normalizeRefundAccount(value: RefundDashboardRow["refund_accounts"]) {
-  if (Array.isArray(value)) {
-    return value[0] ?? null;
-  }
-
-  return value ?? null;
 }
