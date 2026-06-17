@@ -13,27 +13,27 @@ import { cn } from "@/lib/utils";
 const navigationItems = [
   {
     href: "/dashboard",
-    label: "Dashboard",
+    label: "대시보드",
     icon: LayoutDashboard,
   },
   {
     href: "/reservations",
-    label: "Reservations",
+    label: "예약 관리",
     icon: ClipboardList,
   },
   {
     href: "/refunds",
-    label: "Refunds",
+    label: "환불 관리",
     icon: CreditCard,
   },
   {
     href: "/sms-templates",
-    label: "SMS Templates",
+    label: "문자 템플릿",
     icon: MessageSquareText,
   },
   {
     href: "/sms-logs",
-    label: "SMS Logs",
+    label: "문자 로그",
     icon: ReceiptText,
   },
 ];
@@ -57,7 +57,7 @@ export function AppSidebar({ adminName }: AppSidebarProps) {
         <Separator />
         <nav
           className="flex gap-2 overflow-x-auto md:flex-col md:overflow-visible"
-          aria-label="Admin navigation"
+          aria-label="관리자 메뉴"
         >
           {navigationItems.map((item) => {
             const Icon = item.icon;

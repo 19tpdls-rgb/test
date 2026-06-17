@@ -31,7 +31,9 @@ export default async function LoginPage({ searchParams }: LoginPageProps) {
     <main className="flex min-h-screen items-center justify-center px-4 py-10">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle>PICUP PICNIC Admin</CardTitle>
+          <CardTitle>
+            <h1>PICUP PICNIC Admin</h1>
+          </CardTitle>
           <CardDescription>운영 관리자 계정으로 로그인하세요.</CardDescription>
         </CardHeader>
         <CardContent>
