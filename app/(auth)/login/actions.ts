@@ -2,10 +2,14 @@
 
 import { redirect } from "next/navigation";
 
+import { resolveLoginEmail } from "@/lib/auth/login-identifier";
 import { createClient } from "@/lib/supabase/server";
 
 export async function login(formData: FormData) {
-  const email = String(formData.get("email") ?? "");
+  const identifier = String(
+    formData.get("identifier") ?? formData.get("email") ?? "",
+  );
+  const email = resolveLoginEmail(identifier);
   const password = String(formData.get("password") ?? "");
   const supabase = await createClient();
 

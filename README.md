@@ -25,6 +25,8 @@ npm run dev
 NEXT_PUBLIC_SUPABASE_URL=
 NEXT_PUBLIC_SUPABASE_ANON_KEY=
 SUPABASE_SERVICE_ROLE_KEY=
+ADMIN_LOGIN_USERNAME=19tpdls
+ADMIN_LOGIN_EMAIL=19tpdls@picup-picnic.local
 SMS_PROVIDER=mock
 SOLAPI_API_KEY=
 SOLAPI_API_SECRET=
@@ -50,6 +52,27 @@ NHN_SMS_SENDER=
 6. `0006_dashboard_refund_pending_count.sql`
 
 관리자 접근은 `auth.users` 사용자와 `public.admins` 행이 모두 있어야 가능합니다. 운영자 계정을 Supabase Auth에 만든 뒤, 해당 `user_id`를 `admins` 테이블에 추가하세요.
+
+기본 로그인 아이디는 `19tpdls`입니다. 앱은 이 아이디를 Supabase Auth 이메일 `19tpdls@picup-picnic.local`로 매핑합니다. Supabase Auth에서 아래 계정을 생성하거나 비밀번호를 변경하세요.
+
+```text
+Email: 19tpdls@picup-picnic.local
+Password: zeze1256!@
+```
+
+그 다음 Supabase Auth 사용자 ID를 `admins` 테이블에 추가합니다.
+
+```sql
+insert into public.admins (user_id, name, role, is_active)
+values ('Supabase Auth user id', '관리자', 'owner', true);
+```
+
+운영 중 아이디나 내부 이메일을 바꾸려면 Vercel/Supabase 환경에 아래 값을 설정합니다.
+
+```bash
+ADMIN_LOGIN_USERNAME=19tpdls
+ADMIN_LOGIN_EMAIL=19tpdls@picup-picnic.local
+```
 
 ## Features
 
